@@ -1,3 +1,9 @@
 fastapi
+httpx
+Pillow
+PyMuPDF
+pypdf
+pytest
+pytesseract
 python-multipart
 uvicorn

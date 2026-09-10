@@ -2,6 +2,12 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
+from app.services.document_service import (
+    DocumentExtractionError,
+    DocumentValidationError,
+    process_document as process_document_file,
+)
+
 
 DocumentType = Literal[
     "invoice",
@@ -30,19 +36,26 @@ async def process_document(
         DocumentType,
         Form(description="Type of financial document"),
     ],
-) -> dict[str, str]:
+) -> dict[str, object]:
     if not file.filename or not file.filename.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="The uploaded file must have a filename.",
         )
 
-    return {
-        "status": "accepted",
-        "message": "Document processing is not implemented in Step 2.",
-        "document_name": file.filename,
-        "document_type": document_type,
-    }
+    content = await file.read()
+    try:
+        return process_document_file(file.filename, content)
+    except DocumentValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=exc.result,
+        ) from None
+    except DocumentExtractionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.result,
+        ) from None
 
 
 @router.get(
