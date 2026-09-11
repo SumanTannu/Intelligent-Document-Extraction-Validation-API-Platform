@@ -1,7 +1,9 @@
 import logging
+from time import monotonic
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -53,24 +55,44 @@ async def process_document(
         )
 
     content = await file.read()
+    started_at = monotonic()
+    logger.info("Document processing started.")
     try:
-        return process_document_file(
+        result = await run_in_threadpool(
+            process_document_file,
             file.filename,
             content,
             document_type,
             session,
         )
+        logger.info(
+            "Document processing completed in %.2f seconds.",
+            monotonic() - started_at,
+        )
+        return result
     except DocumentValidationError as exc:
+        logger.warning(
+            "Document validation failed after %.2f seconds.",
+            monotonic() - started_at,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=exc.result,
         ) from None
     except DocumentExtractionError as exc:
+        logger.warning(
+            "Document text extraction failed after %.2f seconds.",
+            monotonic() - started_at,
+        )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=exc.result,
         ) from None
     except DocumentStructuredExtractionError as exc:
+        logger.warning(
+            "Document structured extraction failed after %.2f seconds.",
+            monotonic() - started_at,
+        )
         raise HTTPException(
             status_code=exc.status_code,
             detail=exc.result,

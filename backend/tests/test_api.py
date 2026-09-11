@@ -1,6 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import re
+from threading import Event
 from types import SimpleNamespace
 from typing import Any
 
@@ -257,6 +259,42 @@ def test_process_endpoint_propagates_document_type(
     }
     assert response.json()["document_type"] == document_type
     assert response.json()["structured_extraction"]["document_type"] == document_type
+
+
+def test_health_remains_responsive_while_document_processing_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processing_started = Event()
+    finish_processing = Event()
+
+    def slow_process_document(*_args: object) -> dict[str, object]:
+        processing_started.set()
+        finish_processing.wait(timeout=5)
+        raise document_service.DocumentValidationError(
+            {"file_validation": {"status": "FAIL"}}
+        )
+
+    monkeypatch.setattr(
+        "app.api.routes.documents.process_document_file",
+        slow_process_document,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        processing_request = executor.submit(
+            client.post,
+            "/api/v1/documents/process",
+            files={"file": ("scan.pdf", b"pdf content", "application/pdf")},
+            data={"document_type": "cash_flow_statement"},
+        )
+        assert processing_started.wait(timeout=5)
+        try:
+            health_response = client.get("/api/v1/health")
+        finally:
+            finish_processing.set()
+        processing_response = processing_request.result(timeout=5)
+
+    assert health_response.status_code == 200
+    assert processing_response.status_code == 400
 
 
 @pytest.mark.parametrize(
