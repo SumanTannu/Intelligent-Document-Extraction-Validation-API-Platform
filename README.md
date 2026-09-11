@@ -2,6 +2,32 @@
 
 A FastAPI application that accepts financial PDFs, extracts text with native PDF parsing or multi-pass Tesseract OCR, uses Groq for grounded structured extraction, validates financial totals, and stores processed results.
 
+## Deploy both services on Google Cloud Run
+
+The repository includes separate backend and frontend containers, plus a PowerShell deployment script. The frontend container writes its API URL at startup, and the script updates backend CORS after Cloud Run assigns both service URLs.
+
+Prerequisites: install and authenticate the Google Cloud CLI, select a billing-enabled project, and create two Secret Manager secrets. `DATABASE_URL` should point to durable PostgreSQL; SQLite on Cloud Run is ephemeral.
+
+```powershell
+gcloud auth login
+gcloud auth application-default login
+
+gcloud secrets create intellidoc-llm-api-key --data-file="path/to/llm-key.txt"
+gcloud secrets create intellidoc-database-url --data-file="path/to/database-url.txt"
+
+.\deploy-cloud-run.ps1 -ProjectId "YOUR_GOOGLE_CLOUD_PROJECT"
+```
+
+The deployer needs permission to use Cloud Build, Artifact Registry, Cloud Run, and Secret Manager. The Cloud Run runtime service account also needs `Secret Manager Secret Accessor` for both secrets. Re-running the script builds a new revision and updates both services. The defaults deploy to `asia-south1`; override it with `-Region` if needed.
+
+The services use Cloud Run's invoker-IAM-check setting for public access. This also works in organizations whose domain-restricted-sharing policy rejects an `allUsers` IAM binding.
+
+For Cloud SQL, attach the instance to the backend service and use a Unix-socket SQLAlchemy URL in the database secret, for example `postgresql+psycopg2://USER:PASSWORD@/DATABASE?host=/cloudsql/PROJECT:REGION:INSTANCE`:
+
+```powershell
+gcloud run services update intellidoc-backend --region asia-south1 --add-cloudsql-instances PROJECT:REGION:INSTANCE
+```
+
 ## Deploy on Render
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/SumanTannu/Intelligent-Document-Extraction-Validation-API-Platform)
