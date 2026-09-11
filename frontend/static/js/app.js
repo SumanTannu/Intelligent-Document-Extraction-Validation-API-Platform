@@ -73,8 +73,9 @@ async function processDocument(event) {
         return;
     }
 
+    const submittedFile = fileInput.files[0];
     const formData = new FormData();
-    formData.append("file", fileInput.files[0]);
+    formData.append("file", submittedFile);
     formData.append("document_type", documentType.value);
     setProcessingState(true);
 
@@ -92,6 +93,15 @@ async function processDocument(event) {
         }
         window.location.assign(`/documents/${encodeURIComponent(payload.file_name)}`);
     } catch (error) {
+        if (
+            shouldRecoverProcessedDocument(error)
+            && await waitForProcessedDocument(submittedFile.name)
+        ) {
+            window.location.assign(
+                `/documents/${encodeURIComponent(submittedFile.name)}`,
+            );
+            return;
+        }
         showMessage(errorBox, userMessageForError(error));
     } finally {
         setProcessingState(false);
@@ -183,6 +193,35 @@ async function initializeResultPage() {
             "NOT AVAILABLE",
         );
     }
+}
+
+function shouldRecoverProcessedDocument(error) {
+    return error instanceof TypeError
+        || (error instanceof ApiRequestError && [409, 429, 503].includes(error.status));
+}
+
+async function waitForProcessedDocument(fileName) {
+    const attempts = 15;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+        if (attempt > 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        }
+        try {
+            const response = await fetch(
+                apiUrl(`/api/v1/documents/${encodeURIComponent(fileName)}`),
+                { headers: { Accept: "application/json" } },
+            );
+            if (response.ok) {
+                return true;
+            }
+            if (response.status !== 404) {
+                return false;
+            }
+        } catch {
+            // A transient network failure may clear while the original request finishes.
+        }
+    }
+    return false;
 }
 
 function documentNameFromPath() {

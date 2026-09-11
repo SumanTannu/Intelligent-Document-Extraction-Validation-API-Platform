@@ -156,6 +156,14 @@ def test_frontend_config_points_to_separate_backend() -> None:
     assert "https://tannu-intellidoc-backend.onrender.com" in config
 
 
+def test_frontend_recovers_a_completed_document_after_transient_post_failure() -> None:
+    script = (FRONTEND_ROOT / "static/js/app.js").read_text(encoding="utf-8")
+
+    assert "shouldRecoverProcessedDocument(error)" in script
+    assert "waitForProcessedDocument(submittedFile.name)" in script
+    assert "[409, 429, 503].includes(error.status)" in script
+
+
 def test_result_rendering_styles_are_served() -> None:
     stylesheet = (FRONTEND_ROOT / "static/css/styles.css").read_text(
         encoding="utf-8"
