@@ -1,8 +1,8 @@
 import json
+from pathlib import Path
 import re
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 import pytest
@@ -40,26 +40,50 @@ from app.services.extraction_service import (
 
 client = TestClient(app)
 structured_extraction_adapter = TypeAdapter(StructuredExtraction)
+FRONTEND_ROOT = Path(__file__).resolve().parents[2] / "frontend"
 
 
-def test_dashboard_frontend_shell_is_served() -> None:
+def test_backend_root_describes_api_service() -> None:
     response = client.get("/")
 
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    assert "IntelliDoc" in response.text
-    assert 'id="upload-form"' in response.text
-    assert 'name="file"' in response.text
-    assert 'name="document_type"' in response.text
-    assert "/static/css/styles.css" in response.text
-    assert "/static/js/app.js" in response.text
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["status"] == "healthy"
+    assert response.json()["docs"] == "/docs"
+
+
+def test_backend_allows_local_frontend_cors_preflight() -> None:
+    response = client.options(
+        "/api/v1/documents",
+        headers={
+            "Origin": "http://localhost:8080",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:8080"
+    assert "GET" in response.headers["access-control-allow-methods"]
+
+
+def test_static_dashboard_frontend_shell_exists() -> None:
+    dashboard = (FRONTEND_ROOT / "index.html").read_text(encoding="utf-8")
+
+    assert "IntelliDoc" in dashboard
+    assert 'id="upload-form"' in dashboard
+    assert 'name="file"' in dashboard
+    assert 'name="document_type"' in dashboard
+    assert "/config.js" in dashboard
+    assert "/static/css/styles.css" in dashboard
+    assert "/static/js/app.js" in dashboard
+    assert "{{" not in dashboard
 
 
 def test_dashboard_contains_exact_supported_document_type_values() -> None:
-    response = client.get("/")
+    dashboard = (FRONTEND_ROOT / "index.html").read_text(encoding="utf-8")
     option_values = [
         value
-        for value in re.findall(r'<option value="([^"]*)"', response.text)
+        for value in re.findall(r'<option value="([^"]*)"', dashboard)
         if value
     ]
 
@@ -71,32 +95,20 @@ def test_dashboard_contains_exact_supported_document_type_values() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    ("path", "content_type"),
-    [
-        ("/static/css/styles.css", "text/css"),
-        ("/static/js/app.js", "text/javascript"),
-    ],
-)
-def test_frontend_static_assets_are_served(
-    path: str,
-    content_type: str,
-) -> None:
-    response = client.get(path)
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith(content_type)
-    assert response.text.strip()
+@pytest.mark.parametrize("path", ["static/css/styles.css", "static/js/app.js"])
+def test_frontend_static_assets_exist(path: str) -> None:
+    assert (FRONTEND_ROOT / path).read_text(encoding="utf-8").strip()
 
 
 def test_frontend_javascript_uses_existing_api_contract() -> None:
-    javascript = client.get("/static/js/app.js").text
+    javascript = (FRONTEND_ROOT / "static/js/app.js").read_text(encoding="utf-8")
 
     assert 'formData.append("file"' in javascript
     assert 'formData.append("document_type"' in javascript
-    assert 'fetch("/api/v1/documents/process"' in javascript
-    assert 'fetch("/api/v1/documents"' in javascript
-    assert "`/api/v1/documents/${encodeURIComponent(documentName)}`" in javascript
+    assert 'apiUrl("/api/v1/documents/process")' in javascript
+    assert 'apiUrl("/api/v1/documents")' in javascript
+    assert "apiUrl(`/api/v1/documents/${encodeURIComponent(documentName)}`)" in javascript
+    assert "function documentNameFromPath(" in javascript
     assert "function formatFieldName(" in javascript
     assert "function formatConfidence(" in javascript
     assert "function renderEvidence(" in javascript
@@ -106,7 +118,7 @@ def test_frontend_javascript_uses_existing_api_contract() -> None:
     assert ".innerHTML" not in javascript
 
 
-def test_frontend_routes_do_not_change_openapi_surface() -> None:
+def test_api_only_backend_openapi_surface() -> None:
     assert set(app.openapi()["paths"]) == {
         "/api/v1/health",
         "/api/v1/documents/process",
@@ -115,16 +127,15 @@ def test_frontend_routes_do_not_change_openapi_surface() -> None:
     }
 
 
-def test_document_result_shell_is_served_and_escapes_filename() -> None:
-    file_name = "statement<img onerror=alert(1)>.pdf"
-    response = client.get(f"/documents/{quote(file_name, safe='')}")
+def test_static_document_result_shell_contains_no_server_template_values() -> None:
+    result_page = (FRONTEND_ROOT / "document_result.html").read_text(
+        encoding="utf-8"
+    )
 
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    assert 'data-page="result"' in response.text
-    assert file_name not in response.text
-    assert "statement&lt;img onerror=alert(1)&gt;.pdf" in response.text
-    assert "/static/js/app.js" in response.text
+    assert 'data-page="result"' in result_page
+    assert "{{" not in result_page
+    assert "/config.js" in result_page
+    assert "/static/js/app.js" in result_page
     for element_id in (
         "header-financial-status",
         "extracted-fields",
@@ -134,11 +145,19 @@ def test_document_result_shell_is_served_and_escapes_filename() -> None:
         "ocr-details-disclosure",
         "raw-response-json",
     ):
-        assert f'id="{element_id}"' in response.text
+        assert f'id="{element_id}"' in result_page
+
+
+def test_frontend_config_points_to_separate_backend() -> None:
+    config = (FRONTEND_ROOT / "config.js").read_text(encoding="utf-8")
+
+    assert "https://tannu-intellidoc-backend.onrender.com" in config
 
 
 def test_result_rendering_styles_are_served() -> None:
-    stylesheet = client.get("/static/css/styles.css").text
+    stylesheet = (FRONTEND_ROOT / "static/css/styles.css").read_text(
+        encoding="utf-8"
+    )
 
     for selector in (
         ".extracted-field-card",

@@ -25,6 +25,14 @@ def _positive_integer_setting(name: str, default: str) -> int:
     return value
 
 
+def _comma_separated_setting(name: str, default: str) -> tuple[str, ...]:
+    return tuple(
+        value.strip().rstrip("/")
+        for value in os.getenv(name, default).split(",")
+        if value.strip()
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     app_title: str = os.getenv(
@@ -41,6 +49,10 @@ class Settings:
     database_url: str = os.getenv(
         "DATABASE_URL",
         "sqlite:///./intellidoc.sqlite3",
+    )
+    cors_allowed_origins: tuple[str, ...] = _comma_separated_setting(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:8080,http://127.0.0.1:8080",
     )
     llm_provider: str = os.getenv("LLM_PROVIDER", "groq")
     llm_model: str = os.getenv("LLM_MODEL", "qwen/qwen3.8-27b")

@@ -1,5 +1,13 @@
 "use strict";
 
+const API_BASE_URL = String(
+    window.INTELLIDOC_CONFIG?.apiBaseUrl || "http://localhost:8000",
+).replace(/\/+$/, "");
+
+function apiUrl(path) {
+    return `${API_BASE_URL}${path}`;
+}
+
 const DOCUMENT_TYPE_LABELS = Object.freeze({
     invoice: "Invoice",
     balance_sheet: "Balance Sheet",
@@ -71,7 +79,7 @@ async function processDocument(event) {
     setProcessingState(true);
 
     try {
-        const response = await fetch("/api/v1/documents/process", {
+        const response = await fetch(apiUrl("/api/v1/documents/process"), {
             method: "POST",
             body: formData,
         });
@@ -100,7 +108,7 @@ async function loadDocuments() {
     hideMessage(errorBox);
 
     try {
-        const response = await fetch("/api/v1/documents", {
+        const response = await fetch(apiUrl("/api/v1/documents"), {
             headers: { Accept: "application/json" },
         });
         const payload = await parseJsonResponse(response);
@@ -150,13 +158,13 @@ function createDocumentCard(item) {
 }
 
 async function initializeResultPage() {
-    const documentName = document.body.dataset.documentName || "";
+    const documentName = documentNameFromPath();
     const loading = document.getElementById("result-loading");
     const errorBox = document.getElementById("result-error");
 
     try {
         const response = await fetch(
-            `/api/v1/documents/${encodeURIComponent(documentName)}`,
+            apiUrl(`/api/v1/documents/${encodeURIComponent(documentName)}`),
             { headers: { Accept: "application/json" } },
         );
         const payload = await parseJsonResponse(response);
@@ -174,6 +182,19 @@ async function initializeResultPage() {
             document.getElementById("header-financial-status"),
             "NOT AVAILABLE",
         );
+    }
+}
+
+function documentNameFromPath() {
+    const prefix = "/documents/";
+    if (!window.location.pathname.startsWith(prefix)) {
+        return "";
+    }
+    const encodedName = window.location.pathname.slice(prefix.length);
+    try {
+        return decodeURIComponent(encodedName);
+    } catch {
+        return encodedName;
     }
 }
 

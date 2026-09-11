@@ -6,13 +6,19 @@ A FastAPI application that accepts financial PDFs, extracts text with native PDF
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/SumanTannu/Intelligent-Document-Extraction-Validation-API-Platform)
 
-The included Blueprint creates:
+The included Blueprint creates three separate resources and configures the backend health check:
 
-- a Docker web service containing Python, the application, and Tesseract OCR;
+- a Docker backend containing FastAPI and Tesseract OCR;
+- a static frontend served independently through Render's CDN;
 - a free Render Postgres database for processed-document history;
-- a health check at `/api/v1/health`.
 
-When Render asks for `LLM_API_KEY`, enter a valid Groq API key. Do not commit it to the repository. After the deploy succeeds, open the service URL for the web interface or `/docs` for the OpenAPI interface.
+The default service URLs are:
+
+- Frontend: `https://tannu-intellidoc-frontend.onrender.com`
+- Backend: `https://tannu-intellidoc-backend.onrender.com`
+- Backend API documentation: `https://tannu-intellidoc-backend.onrender.com/docs`
+
+When Render asks for `LLM_API_KEY`, enter a valid Groq API key. Do not commit it to the repository. Keep the Blueprint service names unchanged so that the frontend API URL and backend CORS origin continue to match. If you rename either service, update `frontend/config.js` and the backend's `CORS_ALLOWED_ORIGINS` environment variable.
 
 The free web plan has 512 MB of memory and sleeps after inactivity, so the first request after a sleep can be slow and high-resolution OCR may be constrained. The free Postgres database also expires after 30 days. For sustained use, select a paid web plan with at least 2 GB RAM and a paid database in the Render dashboard.
 
@@ -26,7 +32,7 @@ docker run --rm -p 10000:10000 \
   intelligent-document-api
 ```
 
-Then open `http://localhost:10000`.
+The container starts only the backend. Open `http://localhost:10000/docs` for its API documentation.
 
 ## Run locally without Docker
 
@@ -37,10 +43,16 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
 cd backend
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8000
 ```
 
-On Windows, activate the environment with `.venv\Scripts\activate` instead. Configuration defaults and supported variables are listed in `.env.example`.
+On Windows, activate the environment with `.venv\Scripts\activate` instead. In another terminal, serve the frontend:
+
+```bash
+python -m http.server 8080 --directory frontend
+```
+
+Open `http://localhost:8080`. The frontend automatically uses `http://localhost:8000` when served locally and the separate Render backend when deployed. Configuration defaults and supported backend variables are listed in `.env.example`.
 
 ## API endpoints
 

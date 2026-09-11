@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: tannu-intelligent-document-api
+    name: tannu-intellidoc-backend
     runtime: docker
     plan: free
     region: singapore
@@ -13,6 +13,8 @@ services:
         fromDatabase:
           name: tannu-intellidoc-db
           property: connectionString
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://tannu-intellidoc-frontend.onrender.com
       - key: LLM_PROVIDER
         value: groq
       - key: LLM_MODEL
@@ -23,6 +25,17 @@ services:
         sync: false
       - key: OCR_MULTI_PASS
         value: "true"
+
+  - type: web
+    name: tannu-intellidoc-frontend
+    runtime: static
+    buildCommand: echo "Static frontend ready"
+    staticPublishPath: ./frontend
+    autoDeployTrigger: commit
+    routes:
+      - type: rewrite
+        source: /documents/*
+        destination: /document_result.html
 
 databases:
   - name: tannu-intellidoc-db
