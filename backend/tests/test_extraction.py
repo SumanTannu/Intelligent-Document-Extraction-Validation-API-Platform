@@ -448,4 +448,4 @@ def test_document_service_validates_before_extraction(
     )
 
     with pytest.raises(DocumentValidationError):
-        process_document("unsupported.txt", b"text")
+        process_document("unsupported.txt", b"text", "invoice", object())

@@ -1,4 +1,5 @@
 fastapi
+groq==1.7.0
 httpx
 Pillow
 PyMuPDF
@@ -6,4 +7,5 @@ pypdf
 pytest
 pytesseract
 python-multipart
+SQLAlchemy==2.0.52
 uvicorn
