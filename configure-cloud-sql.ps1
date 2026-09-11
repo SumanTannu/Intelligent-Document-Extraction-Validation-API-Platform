@@ -85,7 +85,7 @@ try {
         --project=$ProjectId `
         --region=$Region `
         --add-cloudsql-instances=$connectionName `
-        --set-secrets="DATABASE_URL=intellidoc-database-url:latest" `
+        --update-secrets="DATABASE_URL=intellidoc-database-url:latest" `
         --quiet
     if ($LASTEXITCODE -ne 0) { throw "Backend Cloud SQL connection failed." }
 
