@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import mimetypes
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -13,6 +14,9 @@ from app.core.logging import configure_logging
 
 
 configure_logging()
+
+# Keep JavaScript responses consistent across Windows and Linux MIME databases.
+mimetypes.add_type("text/javascript", ".js", strict=True)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_ROOT = PROJECT_ROOT / "frontend"

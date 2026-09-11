@@ -3,6 +3,7 @@ groq==1.7.0
 httpx
 Jinja2
 Pillow
+psycopg2-binary
 PyMuPDF
 pypdf
 pytest
