@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Upload, extract, and validate financial documents with IntelliDoc.">
+    <title>IntelliDoc | Document Processing</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
+    <script src="{{ url_for('static', path='/js/app.js') }}" defer></script>
+</head>
+<body data-page="dashboard">
+    <header class="site-header">
+        <a class="brand" href="/" aria-label="IntelliDoc dashboard">
+            <span class="brand-mark" aria-hidden="true">ID</span>
+            <span>IntelliDoc</span>
+        </a>
+        <span class="header-label">Document intelligence platform</span>
+    </header>
+
+    <main class="page-shell">
+        <section class="hero" aria-labelledby="dashboard-title">
+            <p class="eyebrow">Extraction · Evidence · Validation</p>
+            <h1 id="dashboard-title">Process financial documents with confidence.</h1>
+            <p class="hero-copy">
+                Upload a supported document to validate the file, extract its text,
+                produce grounded structured data, and run deterministic financial checks.
+            </p>
+        </section>
+
+        <section class="card upload-card" aria-labelledby="upload-heading">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">New document</p>
+                    <h2 id="upload-heading">Upload and process</h2>
+                </div>
+                <span class="file-hint">PDF, JPG or PNG · PDF maximum 3 pages</span>
+            </div>
+
+            <form id="upload-form" class="upload-form" novalidate>
+                <div class="field-group file-field">
+                    <label for="document-file">Document file</label>
+                    <input
+                        id="document-file"
+                        name="file"
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                        required
+                    >
+                    <p id="selected-file" class="field-help">Choose a supported financial document.</p>
+                </div>
+
+                <div class="field-group">
+                    <label for="document-type">Document type</label>
+                    <select id="document-type" name="document_type" required>
+                        <option value="" selected disabled>Select document type</option>
+                        <option value="invoice">Invoice</option>
+                        <option value="balance_sheet">Balance Sheet</option>
+                        <option value="profit_and_loss">Profit and Loss</option>
+                        <option value="cash_flow_statement">Cash Flow Statement</option>
+                    </select>
+                </div>
+
+                <button id="process-button" class="primary-button" type="submit">
+                    <span class="button-label">Process document</span>
+                    <span class="button-spinner" aria-hidden="true"></span>
+                </button>
+            </form>
+
+            <div id="processing-state" class="notice notice-info" role="status" hidden>
+                Processing the document. OCR and structured extraction may take a moment.
+            </div>
+            <div id="api-error" class="notice notice-error" role="alert" hidden></div>
+        </section>
+
+        <section class="documents-section" aria-labelledby="documents-heading">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">History</p>
+                    <h2 id="documents-heading">Previously processed documents</h2>
+                </div>
+                <button id="refresh-documents" class="secondary-button" type="button">Refresh</button>
+            </div>
+
+            <div id="documents-loading" class="empty-state" role="status">
+                Loading processed documents…
+            </div>
+            <div id="documents-error" class="notice notice-error" role="alert" hidden></div>
+            <div id="documents-list" class="document-grid" aria-live="polite"></div>
+        </section>
+    </main>
+</body>
+</html>

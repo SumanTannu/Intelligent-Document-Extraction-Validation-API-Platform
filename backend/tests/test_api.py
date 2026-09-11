@@ -1,6 +1,8 @@
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -38,6 +40,115 @@ from app.services.extraction_service import (
 
 client = TestClient(app)
 structured_extraction_adapter = TypeAdapter(StructuredExtraction)
+
+
+def test_dashboard_frontend_shell_is_served() -> None:
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "IntelliDoc" in response.text
+    assert 'id="upload-form"' in response.text
+    assert 'name="file"' in response.text
+    assert 'name="document_type"' in response.text
+    assert "/static/css/styles.css" in response.text
+    assert "/static/js/app.js" in response.text
+
+
+def test_dashboard_contains_exact_supported_document_type_values() -> None:
+    response = client.get("/")
+    option_values = [
+        value
+        for value in re.findall(r'<option value="([^"]*)"', response.text)
+        if value
+    ]
+
+    assert option_values == [
+        "invoice",
+        "balance_sheet",
+        "profit_and_loss",
+        "cash_flow_statement",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "content_type"),
+    [
+        ("/static/css/styles.css", "text/css"),
+        ("/static/js/app.js", "text/javascript"),
+    ],
+)
+def test_frontend_static_assets_are_served(
+    path: str,
+    content_type: str,
+) -> None:
+    response = client.get(path)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(content_type)
+    assert response.text.strip()
+
+
+def test_frontend_javascript_uses_existing_api_contract() -> None:
+    javascript = client.get("/static/js/app.js").text
+
+    assert 'formData.append("file"' in javascript
+    assert 'formData.append("document_type"' in javascript
+    assert 'fetch("/api/v1/documents/process"' in javascript
+    assert 'fetch("/api/v1/documents"' in javascript
+    assert "`/api/v1/documents/${encodeURIComponent(documentName)}`" in javascript
+    assert "function formatFieldName(" in javascript
+    assert "function formatConfidence(" in javascript
+    assert "function renderEvidence(" in javascript
+    assert "function groupChecksByPeriod(" in javascript
+    assert "function renderInputValues(" in javascript
+    assert "parseFloat(" not in javascript
+    assert ".innerHTML" not in javascript
+
+
+def test_frontend_routes_do_not_change_openapi_surface() -> None:
+    assert set(app.openapi()["paths"]) == {
+        "/api/v1/health",
+        "/api/v1/documents/process",
+        "/api/v1/documents",
+        "/api/v1/documents/{document_name}",
+    }
+
+
+def test_document_result_shell_is_served_and_escapes_filename() -> None:
+    file_name = "statement<img onerror=alert(1)>.pdf"
+    response = client.get(f"/documents/{quote(file_name, safe='')}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert 'data-page="result"' in response.text
+    assert file_name not in response.text
+    assert "statement&lt;img onerror=alert(1)&gt;.pdf" in response.text
+    assert "/static/js/app.js" in response.text
+    for element_id in (
+        "header-financial-status",
+        "extracted-fields",
+        "validation-periods",
+        "extracted-text-disclosure",
+        "raw-text-disclosure",
+        "ocr-details-disclosure",
+        "raw-response-json",
+    ):
+        assert f'id="{element_id}"' in response.text
+
+
+def test_result_rendering_styles_are_served() -> None:
+    stylesheet = client.get("/static/css/styles.css").text
+
+    for selector in (
+        ".extracted-field-card",
+        ".confidence-label",
+        ".evidence-item",
+        ".validation-check",
+        ".input-values",
+        ".disclosure",
+    ):
+        assert selector in stylesheet
 
 
 def valid_field(*, value: object = "sample value") -> dict[str, Any]:

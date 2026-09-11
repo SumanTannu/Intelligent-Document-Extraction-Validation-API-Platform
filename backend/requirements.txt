@@ -1,6 +1,7 @@
 fastapi
 groq==1.7.0
 httpx
+Jinja2
 Pillow
 PyMuPDF
 pypdf

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="View a processed IntelliDoc document result.">
+    <title>Document Result | IntelliDoc</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/css/styles.css') }}">
+    <script src="{{ url_for('static', path='/js/app.js') }}" defer></script>
+</head>
+<body data-page="result" data-document-name="{{ document_name }}">
+    <header class="site-header">
+        <a class="brand" href="/" aria-label="Return to IntelliDoc dashboard">
+            <span class="brand-mark" aria-hidden="true">ID</span>
+            <span>IntelliDoc</span>
+        </a>
+        <a class="back-link" href="/">← Back to dashboard</a>
+    </header>
+
+    <main class="page-shell result-shell">
+        <section class="result-header" aria-labelledby="result-title">
+            <div>
+                <p class="eyebrow">Processing result</p>
+                <h1 id="result-title">Document result</h1>
+                <p id="result-file-name" class="hero-copy">{{ document_name }}</p>
+            </div>
+            <div class="result-statuses" aria-label="Document statuses">
+                <div>
+                    <span class="status-label">Processing</span>
+                    <span id="overall-status" class="status-badge status-neutral">Loading</span>
+                </div>
+                <div>
+                    <span class="status-label">Financial validation</span>
+                    <span id="header-financial-status" class="status-badge status-neutral">Loading</span>
+                </div>
+            </div>
+        </section>
+
+        <div id="result-loading" class="notice notice-info" role="status">
+            Loading the persisted processing result…
+        </div>
+        <div id="result-error" class="notice notice-error" role="alert" hidden></div>
+
+        <div id="result-content" class="result-grid" hidden>
+            <section class="card summary-card full-width" aria-labelledby="summary-heading">
+                <div class="card-heading">
+                    <h2 id="summary-heading">Document summary</h2>
+                </div>
+                <dl class="metadata-list">
+                    <div><dt>File name</dt><dd id="summary-file-name">—</dd></div>
+                    <div><dt>Document type</dt><dd id="summary-document-type">—</dd></div>
+                    <div><dt>Processing status</dt><dd id="summary-status">—</dd></div>
+                    <div><dt>Financial validation</dt><dd id="summary-financial-status">—</dd></div>
+                </dl>
+
+                <ol class="processing-flow" aria-label="Document processing stages">
+                    <li><span>1</span>File validation</li>
+                    <li><span>2</span>Text/OCR extraction</li>
+                    <li><span>3</span>Structured extraction</li>
+                    <li><span>4</span>Evidence and confidence</li>
+                    <li><span>5</span>Financial validation</li>
+                </ol>
+            </section>
+
+            <section class="card" aria-labelledby="validation-heading">
+                <div class="card-heading">
+                    <h2 id="validation-heading">File validation</h2>
+                    <span id="validation-status" class="status-badge status-neutral">—</span>
+                </div>
+                <dl id="validation-details" class="metadata-list"></dl>
+                <p id="file-validation-error" class="inline-error" hidden></p>
+            </section>
+
+            <section class="card" aria-labelledby="text-heading">
+                <div class="card-heading">
+                    <h2 id="text-heading">Text extraction</h2>
+                    <span id="text-status" class="status-badge status-neutral">—</span>
+                </div>
+                <dl id="text-details" class="metadata-list"></dl>
+            </section>
+
+            <section class="card full-width" aria-labelledby="structured-heading">
+                <div class="card-heading">
+                    <div>
+                        <h2 id="structured-heading">Structured extraction</h2>
+                        <p class="section-description">
+                            Values are displayed exactly as returned by the extraction service.
+                        </p>
+                    </div>
+                </div>
+                <p id="structured-empty" class="empty-inline" hidden></p>
+                <div id="extracted-fields" class="extracted-fields" aria-live="polite"></div>
+            </section>
+
+            <section class="card full-width" aria-labelledby="financial-heading">
+                <div class="card-heading">
+                    <div>
+                        <h2 id="financial-heading">Financial validation</h2>
+                        <p class="section-description">
+                            Deterministic checks calculated by the backend from extracted values.
+                        </p>
+                    </div>
+                    <span id="financial-status" class="status-badge status-neutral">—</span>
+                </div>
+                <dl class="metadata-list financial-summary">
+                    <div><dt>Overall status</dt><dd id="financial-overall-status">—</dd></div>
+                    <div><dt>Tolerance</dt><dd id="financial-tolerance">—</dd></div>
+                </dl>
+                <p id="financial-empty" class="empty-inline" hidden></p>
+                <div id="validation-periods" class="validation-periods" aria-live="polite"></div>
+            </section>
+
+            <section class="card full-width text-extraction-content" aria-labelledby="extraction-content-heading">
+                <div class="card-heading">
+                    <div>
+                        <h2 id="extraction-content-heading">Text and OCR details</h2>
+                        <p class="section-description">
+                            Source extraction content is collapsed by default.
+                        </p>
+                    </div>
+                </div>
+
+                <details id="extracted-text-disclosure" class="disclosure" hidden>
+                    <summary>Extracted text</summary>
+                    <pre id="extracted-text-panel" class="text-panel"></pre>
+                </details>
+                <details id="raw-text-disclosure" class="disclosure" hidden>
+                    <summary>Raw OCR text</summary>
+                    <pre id="raw-text-panel" class="text-panel"></pre>
+                </details>
+                <details id="ocr-details-disclosure" class="disclosure" hidden>
+                    <summary>OCR details</summary>
+                    <pre id="ocr-details-panel" class="json-panel"></pre>
+                </details>
+            </section>
+
+            <section class="card full-width raw-response-card" aria-labelledby="raw-response-heading">
+                <details class="disclosure">
+                    <summary id="raw-response-heading">Raw response JSON</summary>
+                    <pre id="raw-response-json" class="json-panel"></pre>
+                </details>
+            </section>
+        </div>
+    </main>
+</body>
+</html>
