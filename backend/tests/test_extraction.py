@@ -9,6 +9,8 @@ from app.main import app
 from app.services.document_service import DocumentValidationError, process_document
 from app.services.ocr_service import (
     TextExtractionError,
+    _normalize_financial_number_candidate,
+    _reconcile_balance_sheet,
     extract_text,
     normalize_financial_numbers,
 )
@@ -120,9 +122,52 @@ def test_grouped_financial_number_spacing_is_normalized() -> None:
 
 
 def test_unrelated_numeric_spaces_are_not_removed() -> None:
-    text = "Years 2023 2024\nValues 125 300\nReference 1,000 and 200"
+    text = (
+        "As at March 31, 2020\n"
+        "Years 2023 2024\n"
+        "Values 125 300\n"
+        "Reference 1,000 and 200"
+    )
 
     assert normalize_financial_numbers(text) == text
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("1 758,103,766", "1,758,103,766"),
+        ("11,462,071 336", "11,462,071,336"),
+        ("1,577 327,790", "1,577,327,790"),
+        ("2,894,458, 722", "2,894,458,722"),
+    ],
+)
+def test_numeric_cell_normalization_repairs_detached_groups(
+    raw_value: str,
+    expected: str,
+) -> None:
+    assert _normalize_financial_number_candidate(raw_value) == expected
+
+
+def test_balance_sheet_reconciliation_selects_matching_ocr_alternative() -> None:
+    lines = [
+        {"text": "Consolidated Balance Sheet"},
+        {"text": "CAPITAL AND LIABILITIES"},
+        {"text": "Cash and balances with Reserve Bank of India 1,000 1,000"},
+        {"text": "Balances with banks and money at call and short notice 2,000 2,000"},
+        {"text": "Investments 3,000 3,000"},
+        {"text": "Advances 4,000 4,000"},
+        {"text": "Fixed assets 5,000 5,600"},
+        {"text": "Other assets 6,000 6,000"},
+        {"text": "Total 21,000 21,000"},
+    ]
+
+    corrections = _reconcile_balance_sheet(
+        {"lines": lines},
+        {6: {1: "5,000"}},
+    )
+
+    assert corrections == 1
+    assert lines[6]["text"] == "Fixed assets 5,000 5,000"
 
 
 def test_multicolumn_ocr_retains_layout_and_positions() -> None:
