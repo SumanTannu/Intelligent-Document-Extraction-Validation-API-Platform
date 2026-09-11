@@ -25,6 +25,12 @@ services:
         sync: false
       - key: OCR_MULTI_PASS
         value: "true"
+      - key: OCR_RENDER_DPI
+        value: "250"
+      - key: OCR_SECONDARY_RENDER_DPI
+        value: "300"
+      - key: OCR_SPARSE_PASS
+        value: "false"
 
   - type: web
     name: tannu-intellidoc-frontend

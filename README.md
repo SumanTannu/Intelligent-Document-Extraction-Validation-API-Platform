@@ -22,6 +22,8 @@ When Render asks for `LLM_API_KEY`, enter a valid Groq API key. Do not commit it
 
 The free web plan has 512 MB of memory and sleeps after inactivity, so the first request after a sleep can be slow and high-resolution OCR may be constrained. The free Postgres database also expires after 30 days. For sustained use, select a paid web plan with at least 2 GB RAM and a paid database in the Render dashboard.
 
+The Blueprint enables a memory-conscious OCR profile for the free backend: 250 DPI for the primary pass, 300 DPI for the secondary pass, and no third sparse pass. Local defaults remain the higher-accuracy 350/450 DPI three-pass profile. After upgrading the backend, restore maximum accuracy by setting `OCR_RENDER_DPI=350`, `OCR_SECONDARY_RENDER_DPI=450`, and `OCR_SPARSE_PASS=true` in Render.
+
 ## Run with Docker
 
 ```bash

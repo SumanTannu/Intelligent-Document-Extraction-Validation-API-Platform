@@ -234,9 +234,23 @@ def _ocr_pdf_page(
     render_dpi: int,
 ) -> dict[str, Any]:
     primary_image = _render_pdf_page(page, render_dpi)
-    primary_page = _ocr_image(primary_image, page_number)
-    if not _boolean_setting("OCR_MULTI_PASS", True):
-        return primary_page
+    try:
+        primary_page = _ocr_image(primary_image, page_number)
+        if not _boolean_setting("OCR_MULTI_PASS", True):
+            return primary_page
+
+        sparse_pass_enabled = _boolean_setting("OCR_SPARSE_PASS", True)
+        sparse_page = (
+            _ocr_image(
+                primary_image,
+                page_number,
+                psm_override=DEFAULT_SPARSE_TESSERACT_PSM,
+            )
+            if sparse_pass_enabled
+            else None
+        )
+    finally:
+        primary_image.close()
 
     secondary_dpi = _integer_setting(
         "OCR_SECONDARY_RENDER_DPI",
@@ -250,27 +264,24 @@ def _ocr_pdf_page(
         0,
         13,
     )
-    secondary_image = (
-        primary_image
-        if secondary_dpi == render_dpi
-        else _render_pdf_page(page, secondary_dpi)
-    )
-    secondary_page = _ocr_image(
-        secondary_image,
-        page_number,
-        psm_override=secondary_psm,
-    )
-    sparse_page = _ocr_image(
-        primary_image,
-        page_number,
-        psm_override=DEFAULT_SPARSE_TESSERACT_PSM,
-    )
-    return _enhance_ocr_page(
-        primary_page,
-        secondary_page,
-        sparse_page,
-        secondary_image,
-    )
+    # Render the second pass only after releasing the primary image. Re-rendering
+    # at the same DPI costs a little CPU but avoids holding two full-page bitmaps.
+    secondary_image = _render_pdf_page(page, secondary_dpi)
+    try:
+        secondary_page = _ocr_image(
+            secondary_image,
+            page_number,
+            psm_override=secondary_psm,
+        )
+        return _enhance_ocr_page(
+            primary_page,
+            secondary_page,
+            sparse_page or secondary_page,
+            secondary_image,
+            sparse_pass_enabled=sparse_pass_enabled,
+        )
+    finally:
+        secondary_image.close()
 
 
 def _render_pdf_page(page: pymupdf.Page, render_dpi: int) -> Image.Image:
@@ -288,11 +299,14 @@ def _ocr_image(
     psm_override: int | None = None,
 ) -> dict[str, Any]:
     prepared_image = _preprocess_image(image)
-    return _ocr_prepared_image(
-        prepared_image,
-        page_number,
-        psm_override=psm_override,
-    )
+    try:
+        return _ocr_prepared_image(
+            prepared_image,
+            page_number,
+            psm_override=psm_override,
+        )
+    finally:
+        prepared_image.close()
 
 
 def _ocr_prepared_image(
@@ -315,31 +329,40 @@ def _ocr_image_with_multiple_passes(
     page_number: int,
 ) -> dict[str, Any]:
     prepared_image = _preprocess_image(image)
-    primary_page = _ocr_prepared_image(prepared_image, page_number)
-    if not _boolean_setting("OCR_MULTI_PASS", True):
-        return primary_page
+    try:
+        primary_page = _ocr_prepared_image(prepared_image, page_number)
+        if not _boolean_setting("OCR_MULTI_PASS", True):
+            return primary_page
 
-    secondary_page = _ocr_prepared_image(
-        prepared_image,
-        page_number,
-        psm_override=_integer_setting(
-            "OCR_SECONDARY_PSM",
-            DEFAULT_SECONDARY_TESSERACT_PSM,
-            0,
-            13,
-        ),
-    )
-    sparse_page = _ocr_prepared_image(
-        prepared_image,
-        page_number,
-        psm_override=DEFAULT_SPARSE_TESSERACT_PSM,
-    )
-    return _enhance_ocr_page(
-        primary_page,
-        secondary_page,
-        sparse_page,
-        prepared_image,
-    )
+        secondary_page = _ocr_prepared_image(
+            prepared_image,
+            page_number,
+            psm_override=_integer_setting(
+                "OCR_SECONDARY_PSM",
+                DEFAULT_SECONDARY_TESSERACT_PSM,
+                0,
+                13,
+            ),
+        )
+        sparse_pass_enabled = _boolean_setting("OCR_SPARSE_PASS", True)
+        sparse_page = (
+            _ocr_prepared_image(
+                prepared_image,
+                page_number,
+                psm_override=DEFAULT_SPARSE_TESSERACT_PSM,
+            )
+            if sparse_pass_enabled
+            else secondary_page
+        )
+        return _enhance_ocr_page(
+            primary_page,
+            secondary_page,
+            sparse_page,
+            prepared_image,
+            sparse_pass_enabled=sparse_pass_enabled,
+        )
+    finally:
+        prepared_image.close()
 
 
 def _preprocess_image(image: Image.Image) -> Image.Image:
@@ -460,6 +483,8 @@ def _enhance_ocr_page(
     secondary_page: dict[str, Any],
     sparse_page: dict[str, Any],
     secondary_image: Image.Image,
+    *,
+    sparse_pass_enabled: bool,
 ) -> dict[str, Any]:
     original_lines = deepcopy(primary_page["lines"])
     primary_page["source_lines"] = original_lines
@@ -507,6 +532,7 @@ def _enhance_ocr_page(
     primary_page["table_regions"] = table_regions
     primary_page["enhancement"] = {
         "multi_pass": True,
+        "sparse_pass": sparse_pass_enabled,
         "numeric_replacements": numeric_replacements,
         "schedule_replacements": schedule_replacements,
         "text_replacements": text_replacements,
@@ -1834,6 +1860,9 @@ def _ocr_details(render_dpi: int | None) -> dict[str, Any]:
         ],
         "multi_pass": _boolean_setting("OCR_MULTI_PASS", True),
     }
+    details["sparse_pass"] = (
+        details["multi_pass"] and _boolean_setting("OCR_SPARSE_PASS", True)
+    )
     if render_dpi is not None:
         details["render_dpi"] = render_dpi
         if details["multi_pass"]:
@@ -1850,7 +1879,8 @@ def _ocr_details(render_dpi: int | None) -> dict[str, Any]:
             0,
             13,
         )
-        details["sparse_page_segmentation_mode"] = DEFAULT_SPARSE_TESSERACT_PSM
+        if details["sparse_pass"]:
+            details["sparse_page_segmentation_mode"] = DEFAULT_SPARSE_TESSERACT_PSM
     return details
 
 
