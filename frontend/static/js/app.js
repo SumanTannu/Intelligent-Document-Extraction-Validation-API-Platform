@@ -84,14 +84,13 @@ async function processDocument(event) {
             method: "POST",
             body: formData,
         });
-        const payload = await parseJsonResponse(response);
         if (!response.ok) {
+            const payload = await parseJsonResponse(response);
             throw new ApiRequestError(response.status, payload);
         }
-        if (!payload || typeof payload.file_name !== "string") {
-            throw new Error("The server returned an incomplete processing response.");
-        }
-        window.location.assign(`/documents/${encodeURIComponent(payload.file_name)}`);
+        window.location.assign(
+            `/documents/${encodeURIComponent(submittedFile.name)}`,
+        );
     } catch (error) {
         if (
             shouldRecoverProcessedDocument(error)
@@ -196,8 +195,8 @@ async function initializeResultPage() {
 }
 
 function shouldRecoverProcessedDocument(error) {
-    return error instanceof TypeError
-        || (error instanceof ApiRequestError && [409, 429, 503].includes(error.status));
+    return !(error instanceof ApiRequestError)
+        || [409, 429, 503].includes(error.status);
 }
 
 async function waitForProcessedDocument(fileName) {

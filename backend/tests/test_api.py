@@ -162,6 +162,7 @@ def test_frontend_recovers_a_completed_document_after_transient_post_failure() -
     assert "shouldRecoverProcessedDocument(error)" in script
     assert "waitForProcessedDocument(submittedFile.name)" in script
     assert "[409, 429, 503].includes(error.status)" in script
+    assert "encodeURIComponent(submittedFile.name)" in script
 
 
 def test_result_rendering_styles_are_served() -> None:
