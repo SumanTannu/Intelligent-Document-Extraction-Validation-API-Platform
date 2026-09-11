@@ -1,5 +1,6 @@
 import os
 import re
+from copy import deepcopy
 from difflib import SequenceMatcher
 from decimal import Decimal
 from io import BytesIO
@@ -24,6 +25,8 @@ DEFAULT_TESSERACT_PSM = 3
 DEFAULT_SECONDARY_TESSERACT_PSM = 4
 DEFAULT_SPARSE_TESSERACT_PSM = 11
 SUPPORTED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+TESSERACT_WINDOWS_INSTALL_DIR = "Tesseract-OCR"
+TESSERACT_WINDOWS_EXECUTABLE = "tesseract.exe"
 
 _BROKEN_GROUPED_NUMBER = re.compile(
     r"(?<![\d,])(?P<head>\d{1,3}(?:,\d{3})+)\s+,\s*(?P<tail>\d{3})(?!\d)"
@@ -55,11 +58,11 @@ _GROUPED_FINANCIAL_NUMBER = re.compile(
 _NUMERIC_OCR_TOKEN = re.compile(r"^[\d,\.\-()?]+$")
 _SCHEDULE_VALUE = re.compile(r"^(?:\d{1,2}[A-Z]?|\d{1,2}&\d{1,2})$")
 _SHORT_TABLE_DATE = re.compile(r"\b\d{2}-[A-Za-z]{3}-\d{2}\b")
-_CURRENCY_THOUSANDS_ARTIFACT = re.compile(
-    r"^\s*(?:Z|₹)\s*in\s+['‘’�]?[O0]{3}\s*$",
+_CURRENCY_UNIT_LINE = re.compile(
+    r"^\s*[^\w\d]*\s*in\s+[^\dA-Za-z]*[O0]{3}\s*$",
     flags=re.IGNORECASE,
 )
-
+_COMMON_FINANCIAL_OCR_WORDS = {"dimunition": "diminution"}
 _BALANCE_SHEET_LIABILITY_LABELS = (
     "capital",
     "reserves and surplus",
@@ -363,9 +366,7 @@ def _run_tesseract(
     psm_override: int | None = None,
     extra_config_override: str | None = None,
 ) -> dict[str, list[Any]]:
-    configured_command = os.getenv("TESSERACT_CMD")
-    if configured_command:
-        pytesseract.pytesseract.tesseract_cmd = configured_command
+    _configure_tesseract_command()
 
     try:
         return pytesseract.image_to_data(
@@ -383,6 +384,31 @@ def _run_tesseract(
         ) from exc
     except TesseractError as exc:
         raise TextExtractionError("The Tesseract OCR engine could not extract text.") from exc
+
+
+def _configure_tesseract_command() -> str:
+    """Configure pytesseract from the environment or common Windows installs."""
+    configured_command = os.getenv("TESSERACT_CMD", "").strip()
+    if configured_command:
+        pytesseract.pytesseract.tesseract_cmd = configured_command
+        return configured_command
+
+    for environment_variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        program_files = os.getenv(environment_variable, "").strip()
+        if not program_files:
+            continue
+
+        candidate = (
+            Path(program_files)
+            / TESSERACT_WINDOWS_INSTALL_DIR
+            / TESSERACT_WINDOWS_EXECUTABLE
+        )
+        if candidate.is_file():
+            command = str(candidate)
+            pytesseract.pytesseract.tesseract_cmd = command
+            return command
+
+    return pytesseract.pytesseract.tesseract_cmd
 
 
 def _tesseract_config(
@@ -435,6 +461,8 @@ def _enhance_ocr_page(
     sparse_page: dict[str, Any],
     secondary_image: Image.Image,
 ) -> dict[str, Any]:
+    original_lines = deepcopy(primary_page["lines"])
+    primary_page["source_lines"] = original_lines
     alternatives, numeric_replacements = _merge_financial_number_passes(
         primary_page,
         secondary_page,
@@ -458,9 +486,25 @@ def _enhance_ocr_page(
         secondary_page,
     )
     removed_layout_noise = _remove_layout_noise(primary_page)
+    restored_substantive_rows = _restore_lost_substantive_rows(
+        primary_page,
+        original_lines,
+    )
+    reconstructed_financial_rows, table_regions = _reconstruct_financial_tables(
+        primary_page
+    )
+    lost_substantive_rows = _lost_substantive_rows(
+        primary_page,
+        original_lines,
+    )
+    if lost_substantive_rows:
+        raise TextExtractionError(
+            "OCR normalization could not safely preserve every substantive table row."
+        )
     primary_page["text"] = _join_page_text(
         [line["text"] for line in primary_page["lines"]]
     )
+    primary_page["table_regions"] = table_regions
     primary_page["enhancement"] = {
         "multi_pass": True,
         "numeric_replacements": numeric_replacements,
@@ -470,6 +514,9 @@ def _enhance_ocr_page(
         "reconciled_values": reconciled_values,
         "common_text_corrections": common_text_corrections,
         "removed_layout_noise": removed_layout_noise,
+        "restored_substantive_rows": restored_substantive_rows,
+        "lost_substantive_rows": 0,
+        "reconstructed_financial_rows": reconstructed_financial_rows,
     }
     return primary_page
 
@@ -733,7 +780,91 @@ def _improve_nonfinancial_text(
                 updated = changed
                 replacements += 1
         primary_line["text"] = updated
+    return replacements + _improve_spatial_text_segments(
+        primary_page,
+        secondary_page,
+        sparse_page,
+    )
+
+
+def _improve_spatial_text_segments(
+    primary_page: dict[str, Any],
+    secondary_page: dict[str, Any],
+    sparse_page: dict[str, Any],
+) -> int:
+    """Replace a column fragment only when a stronger pass occupies that column."""
+    replacements = 0
+    for primary_line in primary_page["lines"]:
+        if len(_financial_number_groups(primary_line, primary_page["width"])) >= 2:
+            continue
+        primary_box = primary_line["bounding_box"]
+        for alternate_page in (secondary_page, sparse_page):
+            for alternate_line in _nearby_spatial_lines(
+                primary_line, primary_page, alternate_page
+            ):
+                alternate_box = alternate_line["bounding_box"]
+                primary_width_ratio = primary_box["width"] / primary_page["width"]
+                alternate_width_ratio = alternate_box["width"] / alternate_page["width"]
+                if alternate_width_ratio > primary_width_ratio * 0.6:
+                    continue
+
+                alternate_left = alternate_box["x"] / alternate_page["width"]
+                alternate_right = (
+                    alternate_box["x"] + alternate_box["width"]
+                ) / alternate_page["width"]
+                spatial_words = [
+                    word
+                    for word in primary_line.get("words", [])
+                    if alternate_left - 0.015
+                    <= _word_horizontal_center(word) / primary_page["width"]
+                    <= alternate_right + 0.015
+                ]
+                if len(spatial_words) < 2:
+                    continue
+                spatial_words.sort(key=lambda word: word["bounding_box"]["x"])
+                original = " ".join(word["text"] for word in spatial_words)
+                replacement = alternate_line["text"].strip()
+                original_key = re.sub(r"\W", "", original.casefold())
+                replacement_key = re.sub(r"\W", "", replacement.casefold())
+                if not original_key or not replacement_key:
+                    continue
+                if SequenceMatcher(None, original_key, replacement_key).ratio() < 0.82:
+                    continue
+                if _line_confidence(alternate_line) < _weighted_word_confidence(spatial_words) + 8:
+                    continue
+                updated = _replace_flexible(primary_line["text"], original, replacement)
+                if updated != primary_line["text"]:
+                    primary_line["text"] = updated
+                    replacements += 1
     return replacements
+
+
+def _nearby_spatial_lines(
+    primary_line: dict[str, Any],
+    primary_page: dict[str, Any],
+    alternate_page: dict[str, Any],
+) -> list[dict[str, Any]]:
+    primary_box = primary_line["bounding_box"]
+    primary_center = (
+        primary_box["y"] + primary_box["height"] / 2
+    ) / primary_page["height"]
+    matches = []
+    for line in alternate_page["lines"]:
+        box = line["bounding_box"]
+        center = (box["y"] + box["height"] / 2) / alternate_page["height"]
+        distance = abs(primary_center - center)
+        if distance <= 0.018:
+            matches.append((box["width"] / alternate_page["width"], distance, line))
+    return [line for _, _, line in sorted(matches, key=lambda item: (item[0], item[1]))]
+
+
+def _weighted_word_confidence(words: list[dict[str, Any]]) -> float:
+    if not words:
+        return 0.0
+    weights = [max(len(word["text"]), 1) for word in words]
+    return sum(
+        word["confidence"] * weight for word, weight in zip(words, weights)
+    ) / sum(weights)
 
 
 def _line_confidence(line: dict[str, Any]) -> float:
@@ -882,26 +1013,387 @@ def _correct_common_financial_text(
             flags=re.IGNORECASE,
         )
         updated = re.sub(r"^(Total\s+)_\s+", r"\1", updated)
-        if _CURRENCY_THOUSANDS_ARTIFACT.fullmatch(updated):
+        if _CURRENCY_UNIT_LINE.fullmatch(updated):
             updated = "₹ in '000"
+        for incorrect, corrected in _COMMON_FINANCIAL_OCR_WORDS.items():
+            updated = re.sub(
+                rf"\b{re.escape(incorrect)}\b",
+                corrected,
+                updated,
+                flags=re.IGNORECASE,
+            )
         if updated != line["text"]:
             line["text"] = updated
             corrections += 1
 
-    secondary_dates = _SHORT_TABLE_DATE.findall(secondary_page["text"])
-    if len(secondary_dates) >= 2:
-        for line in primary_page["lines"]:
-            if "schedule" not in line["text"].casefold():
-                continue
-            recovered_header = (
-                f"Schedule        As at {secondary_dates[0]}"
-                f"        As at {secondary_dates[1]}"
-            )
-            if line["text"] != recovered_header:
-                line["text"] = recovered_header
-                corrections += 1
-            break
+    secondary_headers = [
+        line
+        for line in secondary_page["lines"]
+        if line["text"].strip().casefold().startswith("schedule")
+        and len(_SHORT_TABLE_DATE.findall(line["text"])) >= 2
+    ]
+    for secondary_header in secondary_headers:
+        primary_header = _nearest_line(
+            secondary_header,
+            primary_page["lines"],
+            secondary_page["height"],
+            primary_page["height"],
+        )
+        if primary_header is None:
+            continue
+        if not primary_header["text"].strip().casefold().startswith("schedule"):
+            continue
+        if _is_substantive_table_row(primary_header, primary_page["width"]):
+            continue
+
+        secondary_dates = _SHORT_TABLE_DATE.findall(secondary_header["text"])
+        recovered_header = (
+            f"Schedule        As at {secondary_dates[0]}"
+            f"        As at {secondary_dates[1]}"
+        )
+        if primary_header["text"] != recovered_header:
+            primary_header["text"] = recovered_header
+            corrections += 1
     return corrections
+
+
+def _restore_lost_substantive_rows(
+    page: dict[str, Any],
+    original_lines: list[dict[str, Any]],
+) -> int:
+    restored = 0
+    for original in original_lines:
+        if not _is_substantive_table_row(original, page["width"]):
+            continue
+
+        current = _line_at_same_position(original, page["lines"], page["height"])
+        if current is not None and _retains_label_identity(original, current):
+            continue
+
+        restored_line = deepcopy(original)
+        restored_line["text"] = normalize_financial_numbers(
+            restored_line["raw_text"]
+        )
+        restored_line["normalization_restored"] = True
+        if current is None:
+            page["lines"].append(restored_line)
+        else:
+            page["lines"][page["lines"].index(current)] = restored_line
+        restored += 1
+
+    page["lines"].sort(
+        key=lambda line: (
+            line["bounding_box"]["y"],
+            line["bounding_box"]["x"],
+        )
+    )
+    return restored
+
+
+def _lost_substantive_rows(
+    page: dict[str, Any],
+    original_lines: list[dict[str, Any]],
+) -> list[str]:
+    lost = []
+    for original in original_lines:
+        if not _is_substantive_table_row(original, page["width"]):
+            continue
+        current = _line_at_same_position(original, page["lines"], page["height"])
+        if current is None or not _retains_label_identity(original, current):
+            lost.append(original["raw_text"])
+    return lost
+
+
+def _is_substantive_table_row(line: dict[str, Any], page_width: int) -> bool:
+    words = line.get("words", [])
+    numeric_words = [
+        word
+        for word in words
+        if _is_financial_value_token(word["text"])
+        and _word_horizontal_center(word) >= page_width * 0.55
+    ]
+    if not numeric_words:
+        return False
+
+    first_value_x = min(word["bounding_box"]["x"] for word in numeric_words)
+    label_words = [
+        word["text"]
+        for word in words
+        if word["bounding_box"]["x"] < first_value_x
+        and re.search(r"[A-Za-z]{2,}", word["text"])
+    ]
+    return len(label_words) >= 2
+
+
+def _is_financial_value_token(text: str) -> bool:
+    stripped = text.strip()
+    normalized = _normalize_financial_number_candidate(stripped.strip("()"))
+    return _is_strict_financial_number(normalized) or stripped in {"-", "–", "—"}
+
+
+def _word_horizontal_center(word: dict[str, Any]) -> float:
+    box = word["bounding_box"]
+    return box["x"] + box["width"] / 2
+
+
+def _line_at_same_position(
+    source: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    page_height: int,
+) -> dict[str, Any] | None:
+    source_box = source["bounding_box"]
+    source_center = source_box["y"] + source_box["height"] / 2
+    matches = []
+    for candidate in candidates:
+        candidate_box = candidate["bounding_box"]
+        candidate_center = candidate_box["y"] + candidate_box["height"] / 2
+        distance = abs(source_center - candidate_center) / page_height
+        if distance <= 0.008:
+            source_horizontal_center = source_box["x"] + source_box["width"] / 2
+            candidate_horizontal_center = (
+                candidate_box["x"] + candidate_box["width"] / 2
+            )
+            horizontal_distance = abs(
+                source_horizontal_center - candidate_horizontal_center
+            ) / max(source_box["width"], candidate_box["width"], 1)
+            label_mismatch = 0 if _retains_label_identity(source, candidate) else 1
+            matches.append(
+                (label_mismatch, distance, horizontal_distance, candidate)
+            )
+    if not matches:
+        return None
+    return min(matches, key=lambda match: match[:3])[3]
+
+
+def _retains_label_identity(
+    original: dict[str, Any],
+    processed: dict[str, Any],
+) -> bool:
+    original_tokens = _label_tokens(original["raw_text"])
+    if not original_tokens:
+        return True
+    processed_tokens = _label_tokens(processed["text"])
+    retained = sum(token in processed_tokens for token in original_tokens)
+    return retained / len(original_tokens) >= 0.6
+
+
+def _label_tokens(text: str) -> set[str]:
+    return {
+        token.casefold()
+        for token in re.findall(r"[A-Za-z]{3,}", text)
+    }
+
+
+def _financial_cells(
+    line: dict[str, Any],
+    page_width: int,
+) -> list[dict[str, Any]]:
+    value_words = [
+        word
+        for word in sorted(
+            line.get("words", []), key=lambda item: item["bounding_box"]["x"]
+        )
+        if _word_horizontal_center(word) >= page_width * 0.55
+        and _is_financial_value_token(word["text"])
+    ]
+    groups: list[list[dict[str, Any]]] = []
+    for word in value_words:
+        if not groups:
+            groups.append([word])
+            continue
+        previous_box = groups[-1][-1]["bounding_box"]
+        current_box = word["bounding_box"]
+        gap = current_box["x"] - (previous_box["x"] + previous_box["width"])
+        if gap <= page_width * 0.025:
+            groups[-1].append(word)
+        else:
+            groups.append([word])
+
+    cells = []
+    for group in groups:
+        left = min(word["bounding_box"]["x"] for word in group)
+        right = max(
+            word["bounding_box"]["x"] + word["bounding_box"]["width"]
+            for word in group
+        )
+        raw_value = " ".join(word["text"] for word in group)
+        cells.append(
+            {
+                "raw_text": raw_value,
+                "text": _normalize_financial_number_candidate(raw_value),
+                "x": left,
+                "right": right,
+                "center_x": (left + right) / 2,
+                "words": group,
+            }
+        )
+    return cells
+
+
+def _reconstruct_financial_tables(
+    page: dict[str, Any],
+) -> tuple[int, list[dict[str, Any]]]:
+    """Join wrapped labels to numeric rows and expose coordinate-derived cells."""
+    lines = page["lines"]
+    reconstructed = 0
+    index = 0
+    while index < len(lines):
+        cells = _financial_cells(lines[index], page["width"])
+        if len(cells) < 2 or _line_has_label_left_of_values(lines[index], cells):
+            index += 1
+            continue
+
+        label_indices = []
+        if index > 0 and _is_adjacent_wrapped_label(
+            lines[index - 1], lines[index], page
+        ):
+            label_indices.append(index - 1)
+        if index + 1 < len(lines) and _is_adjacent_wrapped_label(
+            lines[index + 1], lines[index], page
+        ):
+            label_indices.append(index + 1)
+        if not label_indices:
+            index += 1
+            continue
+
+        selected = sorted(set(label_indices + [index]))
+        label_lines = [lines[item] for item in selected if item != index]
+        label_lines.sort(key=lambda item: item["bounding_box"]["y"])
+        label_text = " ".join(item["text"].strip() for item in label_lines)
+        value_text = "        ".join(cell["text"] for cell in cells)
+        source_lines = [deepcopy(lines[item]) for item in selected]
+        all_words = [
+            word for item in selected for word in lines[item].get("words", [])
+        ]
+        left = min(item["bounding_box"]["x"] for item in source_lines)
+        top = min(item["bounding_box"]["y"] for item in source_lines)
+        right = max(
+            item["bounding_box"]["x"] + item["bounding_box"]["width"]
+            for item in source_lines
+        )
+        bottom = max(
+            item["bounding_box"]["y"] + item["bounding_box"]["height"]
+            for item in source_lines
+        )
+        combined = {
+            "raw_text": "\n".join(item["raw_text"] for item in source_lines),
+            "text": f"{label_text}                {value_text}",
+            "bounding_box": {
+                "x": left,
+                "y": top,
+                "width": right - left,
+                "height": bottom - top,
+            },
+            "words": sorted(all_words, key=_word_position),
+            "source_lines": source_lines,
+            "reconstructed_label": label_text,
+        }
+        first = selected[0]
+        for item in reversed(selected):
+            del lines[item]
+        lines.insert(first, combined)
+        reconstructed += 1
+        index = first + 1
+
+    table_rows = []
+    for line in lines:
+        cells = _financial_cells(line, page["width"])
+        if not cells:
+            continue
+        label_words = [
+            word
+            for word in line.get("words", [])
+            if word["bounding_box"]["x"] < min(cell["x"] for cell in cells)
+        ]
+        if not any(re.search(r"[A-Za-z]", word["text"]) for word in label_words):
+            continue
+        label_words.sort(key=lambda word: word["bounding_box"]["x"])
+        label = line.get("reconstructed_label") or " ".join(
+            word["text"] for word in label_words
+        )
+        row = {
+            "label": label,
+            "values": [cell["text"] for cell in cells],
+            "value_columns": [cell["center_x"] for cell in cells],
+            "bounding_box": deepcopy(line["bounding_box"]),
+        }
+        line["table_row"] = row
+        table_rows.append(row)
+
+    return reconstructed, _group_table_regions(
+        table_rows, page["width"], page["height"]
+    )
+
+
+def _line_has_label_left_of_values(
+    line: dict[str, Any],
+    cells: list[dict[str, Any]],
+) -> bool:
+    first_value_x = min(cell["x"] for cell in cells)
+    return any(
+        word["bounding_box"]["x"] < first_value_x
+        and re.search(r"[A-Za-z]{2,}", word["text"])
+        for word in line.get("words", [])
+    )
+
+
+def _is_adjacent_wrapped_label(
+    candidate: dict[str, Any],
+    value_line: dict[str, Any],
+    page: dict[str, Any],
+) -> bool:
+    if _financial_cells(candidate, page["width"]):
+        return False
+    if not any(
+        re.search(r"[A-Za-z]{2,}", word["text"])
+        and _word_horizontal_center(word) < page["width"] * 0.65
+        for word in candidate.get("words", [])
+    ):
+        return False
+    candidate_box = candidate["bounding_box"]
+    value_box = value_line["bounding_box"]
+    candidate_center = candidate_box["y"] + candidate_box["height"] / 2
+    value_center = value_box["y"] + value_box["height"] / 2
+    return abs(candidate_center - value_center) / page["height"] <= 0.035
+
+
+def _group_table_regions(
+    rows: list[dict[str, Any]],
+    page_width: int,
+    page_height: int,
+) -> list[dict[str, Any]]:
+    regions: list[list[dict[str, Any]]] = []
+    for row in sorted(rows, key=lambda item: item["bounding_box"]["y"]):
+        if not regions:
+            regions.append([row])
+            continue
+        previous = regions[-1][-1]["bounding_box"]
+        gap = row["bounding_box"]["y"] - (previous["y"] + previous["height"])
+        if gap / page_height <= 0.05:
+            regions[-1].append(row)
+        else:
+            regions.append([row])
+    return [
+        {
+            "rows": region,
+            "numeric_columns": _cluster_numeric_columns(region, page_width),
+        }
+        for region in regions
+    ]
+
+
+def _cluster_numeric_columns(
+    rows: list[dict[str, Any]],
+    scale: int,
+) -> list[float]:
+    centers = sorted(center for row in rows for center in row["value_columns"])
+    clusters: list[list[float]] = []
+    for center in centers:
+        if not clusters or abs(center - median(clusters[-1])) / max(scale, 1) > 0.06:
+            clusters.append([center])
+        else:
+            clusters[-1].append(center)
+    return [round(median(cluster), 2) for cluster in clusters]
 
 
 def _remove_layout_noise(page: dict[str, Any]) -> int:
@@ -918,8 +1410,8 @@ def _remove_layout_noise(page: dict[str, Any]) -> int:
     for line in page["lines"]:
         stripped = line["text"].strip()
         compact = stripped.replace(" ", "")
-        if compact and all(character in "iIl|/;:_-" for character in compact) and any(
-            character in "|/;:_-" for character in compact
+        if compact and all(character in "iIl|/;:_.-" for character in compact) and any(
+            character in "|/;:_.-" for character in compact
         ):
             continue
         box = line["bounding_box"]
@@ -930,9 +1422,50 @@ def _remove_layout_noise(page: dict[str, Any]) -> int:
             and any(abs(center - schedule_center) <= 0.025 for schedule_center in schedule_centers)
         ):
             continue
+        if _is_probable_duplicate_logo_line(line, page["lines"], page["height"]):
+            continue
         retained.append(line)
     page["lines"] = retained
     return original_count - len(retained)
+
+
+def _is_probable_duplicate_logo_line(
+    line: dict[str, Any],
+    lines: list[dict[str, Any]],
+    page_height: int,
+) -> bool:
+    """Drop low-confidence footer logo glyphs duplicated by nearby footer text."""
+    box = line["bounding_box"]
+    if box["y"] / page_height < 0.75 or len(line.get("words", [])) > 4:
+        return False
+    alpha_tokens = {
+        re.sub(r"[^a-z]", "", word["text"].casefold())
+        for word in line.get("words", [])
+    }
+    alpha_tokens.discard("")
+    if len(alpha_tokens) < 2:
+        return False
+    for other in lines:
+        if other is line or other["bounding_box"]["y"] <= box["y"]:
+            continue
+        if (other["bounding_box"]["y"] - box["y"]) / page_height > 0.05:
+            continue
+        other_tokens = {
+            re.sub(r"[^a-z]", "", word["text"].casefold())
+            for word in other.get("words", [])
+        }
+        other_tokens.discard("")
+        looks_like_graphic_text = (
+            _line_confidence(line) < 90
+            or box["height"] > other["bounding_box"]["height"] * 1.3
+            or any(
+                not re.search(r"[A-Za-z]", word["text"])
+                for word in line.get("words", [])
+            )
+        )
+        if len(alpha_tokens & other_tokens) >= 2 and looks_like_graphic_text:
+            return True
+    return False
 
 
 def _reconcile_balance_sheet(
@@ -1189,7 +1722,52 @@ def _line_from_row(row: dict[str, Any]) -> dict[str, Any]:
             "height": row["bottom"] - row["top"],
         },
         "words": words,
+        "segments": _spatial_segments(words, typical_character_width),
     }
+
+
+def _spatial_segments(
+    words: list[dict[str, Any]],
+    typical_character_width: float,
+) -> list[dict[str, Any]]:
+    """Retain coordinate-separated columns instead of only flattening to text."""
+    groups: list[list[dict[str, Any]]] = []
+    for word in words:
+        if not groups:
+            groups.append([word])
+            continue
+        previous = groups[-1][-1]["bounding_box"]
+        current = word["bounding_box"]
+        gap = current["x"] - (previous["x"] + previous["width"])
+        if gap > max(12, typical_character_width * 3.5):
+            groups.append([word])
+        else:
+            groups[-1].append(word)
+    segments = []
+    for group in groups:
+        left = min(word["bounding_box"]["x"] for word in group)
+        top = min(word["bounding_box"]["y"] for word in group)
+        right = max(
+            word["bounding_box"]["x"] + word["bounding_box"]["width"]
+            for word in group
+        )
+        bottom = max(
+            word["bounding_box"]["y"] + word["bounding_box"]["height"]
+            for word in group
+        )
+        segments.append(
+            {
+                "text": " ".join(word["text"] for word in group),
+                "bounding_box": {
+                    "x": left,
+                    "y": top,
+                    "width": right - left,
+                    "height": bottom - top,
+                },
+                "confidence": _weighted_word_confidence(group),
+            }
+        )
+    return segments
 
 
 def _word_position(word: dict[str, Any]) -> tuple[float, int]:

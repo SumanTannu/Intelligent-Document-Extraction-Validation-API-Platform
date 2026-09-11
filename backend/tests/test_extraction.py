@@ -1,6 +1,8 @@
 from io import BytesIO
+from pathlib import Path
 
 import pymupdf
+import pytesseract
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw, ImageFont
@@ -9,8 +11,13 @@ from app.main import app
 from app.services.document_service import DocumentValidationError, process_document
 from app.services.ocr_service import (
     TextExtractionError,
+    _configure_tesseract_command,
+    _correct_common_financial_text,
+    _lost_substantive_rows,
     _normalize_financial_number_candidate,
     _reconcile_balance_sheet,
+    _reconstruct_financial_tables,
+    _restore_lost_substantive_rows,
     extract_text,
     normalize_financial_numbers,
 )
@@ -18,6 +25,27 @@ from app.services.ocr_service import (
 
 OCR_TEXT = "SCANNED INVOICE TOTAL 1250"
 NATIVE_TEXT = "Native invoice text with an amount of 1250 dollars"
+DATASET_CASH_FLOW_2017 = (
+    Path(__file__).resolve().parents[2]
+    / "New Dataset"
+    / "Cash Flows"
+    / "Consolidated Cash Flow Statement 2017.pdf"
+)
+
+
+def test_tesseract_is_discovered_from_standard_windows_install(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = tmp_path / "Tesseract-OCR" / "tesseract.exe"
+    executable.parent.mkdir()
+    executable.touch()
+    monkeypatch.delenv("TESSERACT_CMD", raising=False)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.setattr(pytesseract.pytesseract, "tesseract_cmd", "tesseract")
+
+    assert _configure_tesseract_command() == str(executable)
+    assert pytesseract.pytesseract.tesseract_cmd == str(executable)
 
 
 def make_text_image(image_format: str = "PNG") -> bytes:
@@ -168,6 +196,186 @@ def test_balance_sheet_reconciliation_selects_matching_ocr_alternative() -> None
 
     assert corrections == 1
     assert lines[6]["text"] == "Fixed assets 5,000 5,000"
+
+
+def _word(text: str, x: int, y: int, width: int = 80) -> dict:
+    return {
+        "text": text,
+        "confidence": 90.0,
+        "bounding_box": {"x": x, "y": y, "width": width, "height": 30},
+        "block_number": 1,
+        "paragraph_number": 1,
+        "line_number": 1,
+    }
+
+
+def _schedule_referenced_table_row() -> dict:
+    raw_text = (
+        "Cash equivalents on transfer [Refer Schedule 12(1)]"
+        "        295,617        -"
+    )
+    return {
+        "raw_text": raw_text,
+        "text": raw_text,
+        "bounding_box": {"x": 50, "y": 500, "width": 900, "height": 35},
+        "words": [
+            _word("Cash", 50, 500),
+            _word("equivalents", 140, 500, 130),
+            _word("on", 280, 500, 35),
+            _word("transfer", 325, 500, 90),
+            _word("[Refer", 425, 500, 70),
+            _word("Schedule", 505, 500, 90),
+            _word("12(1)]", 605, 500, 65),
+            _word("295,617", 710, 500, 90),
+            _word("-", 900, 500, 15),
+        ],
+    }
+
+
+def test_header_recovery_does_not_replace_schedule_referenced_row() -> None:
+    financial_row = _schedule_referenced_table_row()
+    primary_header = {
+        "raw_text": "Schedule 31-Mar-17 31-Mar-16",
+        "text": "Schedule 31-Mar-17 31-Mar-16",
+        "bounding_box": {"x": 500, "y": 100, "width": 450, "height": 35},
+        "words": [],
+    }
+    primary_page = {
+        "width": 1000,
+        "height": 1000,
+        "lines": [financial_row, primary_header],
+    }
+    secondary_page = {
+        "width": 1000,
+        "height": 1000,
+        "text": "Schedule As at 31-Mar-17 As at 31-Mar-16",
+        "lines": [
+            {
+                "raw_text": "Schedule As at 31-Mar-17 As at 31-Mar-16",
+                "text": "Schedule As at 31-Mar-17 As at 31-Mar-16",
+                "bounding_box": {
+                    "x": 500,
+                    "y": 100,
+                    "width": 450,
+                    "height": 35,
+                },
+                "words": [],
+            }
+        ],
+    }
+
+    _correct_common_financial_text(primary_page, secondary_page)
+
+    assert financial_row["text"] == financial_row["raw_text"]
+    assert primary_header["text"] == (
+        "Schedule        As at 31-Mar-17        As at 31-Mar-16"
+    )
+
+
+def test_substantive_raw_row_is_restored_if_normalization_loses_it() -> None:
+    original = _schedule_referenced_table_row()
+    overwritten = _schedule_referenced_table_row()
+    overwritten["text"] = "Schedule As at 31-Mar-17 As at 31-Mar-16"
+    page = {"width": 1000, "height": 1000, "lines": [overwritten]}
+
+    restored = _restore_lost_substantive_rows(page, [original])
+
+    assert restored == 1
+    assert page["lines"][0]["text"] == original["raw_text"]
+    assert _lost_substantive_rows(page, [original]) == []
+
+
+def test_wrapped_financial_label_is_joined_to_coordinate_aligned_values() -> None:
+    def word(text: str, x: int, y: int) -> dict:
+        return {
+            "text": text,
+            "confidence": 95.0,
+            "bounding_box": {"x": x, "y": y, "width": max(20, len(text) * 8), "height": 25},
+        }
+
+    lines = [
+        {
+            "raw_text": "Increase in borrowings (excluding subordinate debt,",
+            "text": "Increase in borrowings (excluding subordinate debt,",
+            "bounding_box": {"x": 50, "y": 100, "width": 390, "height": 25},
+            "words": [word("Increase", 50, 100), word("borrowings", 150, 100)],
+        },
+        {
+            "raw_text": "(33,898,658) 402,081,134",
+            "text": "(33,898,658)        402,081,134",
+            "bounding_box": {"x": 650, "y": 125, "width": 300, "height": 25},
+            "words": [word("(33,898,658)", 650, 125), word("402,081,134", 830, 125)],
+        },
+        {
+            "raw_text": "perpetual debt and upper tier II instruments)",
+            "text": "perpetual debt and upper tier II instruments)",
+            "bounding_box": {"x": 50, "y": 150, "width": 390, "height": 25},
+            "words": [word("perpetual", 50, 150), word("instruments)", 180, 150)],
+        },
+    ]
+    page = {"width": 1000, "height": 1000, "lines": lines}
+
+    reconstructed, regions = _reconstruct_financial_tables(page)
+
+    assert reconstructed == 1
+    assert len(page["lines"]) == 1
+    assert page["lines"][0]["table_row"]["label"] == (
+        "Increase in borrowings (excluding subordinate debt, "
+        "perpetual debt and upper tier II instruments)"
+    )
+    assert page["lines"][0]["table_row"]["values"] == ["(33,898,658)", "402,081,134"]
+    assert regions[0]["numeric_columns"]
+    assert len(page["lines"][0]["source_lines"]) == 3
+
+
+@pytest.mark.skipif(
+    not DATASET_CASH_FLOW_2017.is_file(),
+    reason="Local OCR dataset is not available.",
+)
+def test_cash_flow_2017_retains_amalgamation_row() -> None:
+    result = extract_text(
+        DATASET_CASH_FLOW_2017.name,
+        DATASET_CASH_FLOW_2017.read_bytes(),
+    )
+
+    expected_row = (
+        "Cash and cash equivalents on amalgamation [Refer Schedule 18(1)]"
+        "                295,617                -"
+    )
+    assert expected_row in result["raw_text"]
+    assert expected_row in result["extracted_text"]
+    assert "₹ in '000" in result["extracted_text"]
+    assert "Provision for diminution in value of Investments" in result["extracted_text"]
+    assert "P. B. Pardiwalla" in result["extracted_text"]
+    assert "LF HDFC BANK" not in result["extracted_text"]
+    assert "1} HDFC BANK" not in result["extracted_text"]
+    assert not any(
+        line["text"].replace(" ", "") == "."
+        for page in result["pages"]
+        for line in page["lines"]
+    )
+    assert (
+        "Increase / (decrease) in borrowings (excluding subordinate debt, "
+        "perpetual debt and upper tier II instruments)"
+    ) in result["extracted_text"]
+    assert all(page["source_lines"] for page in result["pages"])
+    assert all(page["table_regions"] for page in result["pages"])
+    matching_rows = [
+        row
+        for page in result["pages"]
+        for region in page["table_regions"]
+        for row in region["rows"]
+        if "amalgamation" in row["label"].casefold()
+    ]
+    assert len(matching_rows) == 1
+    assert matching_rows[0]["label"] == (
+        "Cash and cash equivalents on amalgamation [Refer Schedule 18(1)]"
+    )
+    assert matching_rows[0]["values"] == ["295,617", "-"]
+    assert all(
+        page["enhancement"]["lost_substantive_rows"] == 0
+        for page in result["pages"]
+    )
 
 
 def test_multicolumn_ocr_retains_layout_and_positions() -> None:
