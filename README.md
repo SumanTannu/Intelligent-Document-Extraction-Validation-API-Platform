@@ -28,25 +28,15 @@ For Cloud SQL, attach the instance to the backend service and use a Unix-socket 
 gcloud run services update intellidoc-backend --region asia-south1 --add-cloudsql-instances PROJECT:REGION:INSTANCE
 ```
 
-## Deploy on Render
+## Live services
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/SumanTannu/Intelligent-Document-Extraction-Validation-API-Platform)
+IntelliDoc is deployed as separate frontend and backend services on Google Cloud Run:
 
-The included Blueprint creates three separate resources and configures the backend health check:
+- Frontend: [tannu-intellidoc-frontend-6fgf2nqd6a-el.a.run.app](https://tannu-intellidoc-frontend-6fgf2nqd6a-el.a.run.app)
+- Backend: [tannu-intellidoc-backend-6fgf2nqd6a-el.a.run.app](https://tannu-intellidoc-backend-6fgf2nqd6a-el.a.run.app)
+- API documentation: [Swagger UI](https://tannu-intellidoc-backend-6fgf2nqd6a-el.a.run.app/docs)
 
-- a Docker backend containing FastAPI and Tesseract OCR;
-- a static frontend served independently through Render's CDN;
-- a free Render Postgres database for processed-document history;
-
-The default service URLs are:
-
-- Frontend: `https://tannu-intellidoc-frontend.onrender.com`
-- Backend: `https://tannu-intellidoc-backend.onrender.com`
-- Backend API documentation: `https://tannu-intellidoc-backend.onrender.com/docs`
-
-When Render asks for `LLM_API_KEY`, enter a valid Groq API key. Do not commit it to the repository. Keep the Blueprint service names unchanged so that the frontend API URL and backend CORS origin continue to match. If you rename either service, update `frontend/config.js` and the backend's `CORS_ALLOWED_ORIGINS` environment variable.
-
-The free web plan has 512 MB of memory and sleeps after inactivity, so the first request after a sleep can be slow and high-resolution OCR may be constrained. The free Postgres database also expires after 30 days. For sustained use, select a paid web plan with at least 2 GB RAM and a paid database in the Render dashboard.
+The backend Cloud Run service includes FastAPI and Tesseract OCR. Configure production secrets such as `LLM_API_KEY` in Cloud Run, not in the repository. If the frontend or backend URL changes, update `frontend/config.js` and the backend `CORS_ALLOWED_ORIGINS` configuration to match.
 
 ## Run with Docker
 
@@ -78,7 +68,7 @@ On Windows, activate the environment with `.venv\Scripts\activate` instead. In a
 python -m http.server 8080 --directory frontend
 ```
 
-Open `http://localhost:8080`. The frontend automatically uses `http://localhost:8000` when served locally and the separate Render backend when deployed. Configuration defaults and supported backend variables are listed in `.env.example`.
+Open `http://localhost:8080`. The frontend automatically uses `http://localhost:8000` when served locally and the separate Google Cloud Run backend when deployed. Configuration defaults and supported backend variables are listed in `.env.example`.
 
 ## API endpoints
 
